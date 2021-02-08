@@ -182,7 +182,6 @@ void print_inst(uint8_t inst, uint8_t left, uint8_t right) {
   }
   string a = instruction.str();
   cout << a << "\n";
-  return;
 }
 
 /////////////////////////////////////////////////
@@ -206,12 +205,12 @@ Phase decode_instr() {
   switch (opcode_category) {
     case MOVE_OPCODE:
       if (opcode_type == 1 || opcode_type == 0b101) {
-        g_current_operand_right = &registers_general[r >> 2 & 0b111111];
+        g_current_operand_right = &registers_general[r >> 2 & 0b1111];
         g_current_operand_right_need_fetch = true;
       } else if (opcode_type == 0 || opcode_type == 0b100) {
         g_current_operand_right = nullptr;
         g_current_operand_right_need_fetch = false;
-        g_current_operand_right_fetched = r;
+        g_current_operand_right_fetched = r & 0b111111;
       } else {
         return ILLEGAL_OPCODE;
       }
@@ -224,9 +223,9 @@ Phase decode_instr() {
       if (opcode_type == 0) {
         g_current_operand_right = nullptr;
         g_current_operand_right_need_fetch = false;
-        g_current_operand_right_fetched = r;
+        g_current_operand_right_fetched = r & 0b111111;
       } else if (opcode_type == 1) {
-        g_current_operand_right = &registers_general[r >> 2 & 0b111111];
+        g_current_operand_right = &registers_general[r >> 2 & 0b1111];
         g_current_operand_right_need_fetch = true;
       } else {
         return ILLEGAL_OPCODE;
@@ -235,8 +234,9 @@ Phase decode_instr() {
     default:
       g_current_operand_right = nullptr;
       g_current_operand_right_need_fetch = false;
-      g_current_operand_right_fetched = r;
+      g_current_operand_right_fetched = r & 0b111111;
   }
+  print_inst(g_current_inst, (l << 2 & 0b1100) | (r >> 6 & 0b11), r & 0b111111);
   return CALCULATE_EA;
 }
 
@@ -282,41 +282,43 @@ Phase execute_instr() {
       break;
     case BRANCH_OPCODE:
       switch (opcode_type) {
-        case 0: // JR direct jump
+        case 0:  // JR direct jump
           register_pc = *g_current_operand_left;
           break;
-        case 1: // BEQ
-          if(*g_current_operand_left == registers_general[0]){
+        case 1:  // BEQ
+          if (*g_current_operand_left == registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
           }
           break;
-        case 2: // BNE
-          if (*g_current_operand_left != registers_general[0]){
+        case 2:  // BNE
+          if (*g_current_operand_left != registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
           }
           break;
-        case 3: // BLT
-          if (*g_current_operand_left < registers_general[0]){
+        case 3:  // BLT
+          if (*g_current_operand_left < registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
           }
-        case 4: // BGT
-          if (*g_current_operand_left > registers_general[0]){
-            register_pc += g_current_operand_right_fetched;
-          }
-          break;
-        case 5: // BLE
-          if (*g_current_operand_left <= registers_general[0]){
+        case 4:  // BGT
+          if (*g_current_operand_left > registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
           }
           break;
-        case 6: // BGE
-          if (*g_current_operand_left >= registers_general[0]){
+        case 5:  // BLE
+          if (*g_current_operand_left <= registers_general[0]) {
+            register_pc += g_current_operand_right_fetched;
+          }
+          break;
+        case 6:  // BGE
+          if (*g_current_operand_left >= registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
           }
           break;
         default:
           return ILLEGAL_OPCODE;
       }
+    default:
+      return ILLEGAL_OPCODE;
   }
   register_pc++;
   return WRITE_BACK;
@@ -417,21 +419,24 @@ int main(int argc, const char *argv[]) {
     switch (current_phase) {
       case ILLEGAL_OPCODE:
         printf("Illegal instruction %02x%02x detected at address %04x\n\n",
-               /*better put some data here!*/ 0);
+               /*better put some data here!*/ g_current_inst_raw[0],
+               g_current_inst_raw[1], register_pc);
         break;
 
       case INFINITE_LOOP:
         printf(
             "Possible infinite loop detected with instruction %02x%02x at "
             "address %04x\n\n",
-            /*better put some data here!*/ 0);
+            /*better put some data here!*/ g_current_inst_raw[0],
+            g_current_inst_raw[1], register_pc);
         break;
 
       case ILLEGAL_ADDRESS:
         printf(
             "Illegal address %04x detected with instruction %02x%02x at "
             "address %04x\n\n",
-            /*better put some data here!*/ 0);
+            /*better put some data here!*/ g_current_inst_raw[0],
+            g_current_inst_raw[1], register_pc);
         break;
 
       default:
