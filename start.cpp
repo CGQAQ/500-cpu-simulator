@@ -10,6 +10,8 @@
 
 using namespace std;
 
+#define LINE_LENGTH 16
+
 // constants for our processor definition (sizes are in words)
 #define WORD_SIZE 2
 #define DATA_SIZE 1024
@@ -18,7 +20,7 @@ using namespace std;
 
 ///////////////////////////////////////////////
 // constants and structures
-static int16_t registers_general[REGISTERS];
+static uint16_t registers_general[REGISTERS];
 static uint16_t register_pc;
 
 // our opcodes are nicely incremental
@@ -89,8 +91,8 @@ Phase write_back();
 
 static uint8_t *g_current_inst_raw;
 static uint8_t g_current_inst;
-static int16_t *g_current_operand_left;
-static int16_t *g_current_operand_right;
+static uint16_t *g_current_operand_left;
+static uint16_t *g_current_operand_right;
 static bool g_current_operand_right_need_fetch;
 static int16_t g_current_operand_right_fetched;
 
@@ -191,6 +193,11 @@ Phase fetch_instr() {
   return DECODE_INSTR;
 }
 
+int16_t sign_extend(uint16_t x, int bits) {
+  uint16_t m = 1u << (bits - 1);
+  return (x ^ m) - m;
+}
+
 Phase decode_instr() {
   // big endian
   auto &l = g_current_inst_raw[0];
@@ -200,13 +207,17 @@ Phase decode_instr() {
   auto opcode_type = g_current_inst & 0b111;
 
   g_current_operand_left =
-      &registers_general[(l << 2 & 0b1100) | (r >> 6 & 0b11)];
+      &registers_general[l << 2 & 0b1100 | (r >> 6 & 0b11)];
   //  g_current_operand_right = r & 0b111111;
   switch (opcode_category) {
     case MOVE_OPCODE:
-      if (opcode_type == 1 || opcode_type == 0b101) {
+      if (opcode_type == 1) {
         g_current_operand_right = &registers_general[r >> 2 & 0b1111];
         g_current_operand_right_need_fetch = true;
+      } else if (opcode_type == 0b101) {
+        g_current_operand_right = &registers_general[r >> 2 & 0b1111];
+        g_current_operand_right_need_fetch = false;
+        g_current_operand_right_fetched = *g_current_operand_right;
       } else if (opcode_type == 0 || opcode_type == 0b100) {
         g_current_operand_right = nullptr;
         g_current_operand_right_need_fetch = false;
@@ -226,11 +237,18 @@ Phase decode_instr() {
         g_current_operand_right_fetched = r & 0b111111;
       } else if (opcode_type == 1) {
         g_current_operand_right = &registers_general[r >> 2 & 0b1111];
-        g_current_operand_right_need_fetch = true;
+        g_current_operand_right_need_fetch = false;
+        g_current_operand_right_fetched = *g_current_operand_right;
       } else {
         return ILLEGAL_OPCODE;
       }
       break;
+    case BRANCH_OPCODE: {
+      g_current_operand_right = nullptr;
+      g_current_operand_right_need_fetch = false;
+      g_current_operand_right_fetched = sign_extend(r&0b111111, 6);
+      break;
+    }
     default:
       g_current_operand_right = nullptr;
       g_current_operand_right_need_fetch = false;
@@ -245,7 +263,7 @@ Phase calculate_ea() { return FETCH_OPERANDS; }
 Phase fetch_operands() {
   if (g_current_operand_right_need_fetch) {
     auto d = data[*g_current_operand_right];
-    g_current_operand_right_fetched = (d[1] << 8 & 0b111111110000000) | d[0];
+    g_current_operand_right_fetched = (d[0] << 8 & 0b111111110000000) | d[1];
   }
   return EXECUTE_INSTR;
 }
@@ -253,6 +271,7 @@ Phase fetch_operands() {
 Phase execute_instr() {
   auto opcode_category = g_current_inst >> 3 & 0b111;
   auto opcode_type = g_current_inst & 0b111;
+  bool is_jumped = false;
   switch (opcode_category) {
     case ADD_OPCODE:
       *g_current_operand_left += g_current_operand_right_fetched;
@@ -270,7 +289,20 @@ Phase execute_instr() {
       *g_current_operand_left ^= g_current_operand_right_fetched;
       break;
     case MOVE_OPCODE:
-      *g_current_operand_left = g_current_operand_right_fetched;
+      if (opcode_type == 0b100 || opcode_type == 0b101) {
+        auto offset = *g_current_operand_left;
+        if (offset >= 0 && offset < DATA_SIZE) {
+          // big endian
+          data[offset][0] = g_current_operand_right_fetched >> 8 & 0xFF;
+          data[offset][1] = g_current_operand_right_fetched & 0xFF;
+        } else {
+          return ILLEGAL_ADDRESS;
+        }
+      } else if (opcode_type == 0 || opcode_type == 1) {
+        *g_current_operand_left = g_current_operand_right_fetched;
+      } else {
+        return ILLEGAL_OPCODE;
+      }
       break;
     case SHIFT_OPCODE:
       if (opcode_type == 0)
@@ -283,44 +315,53 @@ Phase execute_instr() {
     case BRANCH_OPCODE:
       switch (opcode_type) {
         case 0:  // JR direct jump
-          register_pc = *g_current_operand_left;
+          register_pc = *g_current_operand_left - 1;
+          is_jumped = true;
           break;
         case 1:  // BEQ
           if (*g_current_operand_left == registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
+            is_jumped = true;
           }
           break;
         case 2:  // BNE
           if (*g_current_operand_left != registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
+            is_jumped = true;
           }
           break;
         case 3:  // BLT
           if (*g_current_operand_left < registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
+            is_jumped = true;
           }
+          break;
         case 4:  // BGT
           if (*g_current_operand_left > registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
+            is_jumped = true;
           }
           break;
         case 5:  // BLE
           if (*g_current_operand_left <= registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
+            is_jumped = true;
           }
           break;
         case 6:  // BGE
           if (*g_current_operand_left >= registers_general[0]) {
             register_pc += g_current_operand_right_fetched;
+            is_jumped = true;
           }
           break;
         default:
           return ILLEGAL_OPCODE;
       }
+      break;
     default:
       return ILLEGAL_OPCODE;
   }
-  register_pc++;
+  if (opcode_category != BRANCH_OPCODE || !is_jumped) register_pc++;
   return WRITE_BACK;
 }
 
@@ -339,7 +380,46 @@ void initialize_system() {
   memset(code, 0xFF, sizeof code);
 }
 
-void print_memory() {}
+// checks the hex value to ensure it a printable ASCII character. If
+// it isn't, '.' is returned instead of itself
+char valid_ascii(unsigned char hex_value) {
+  if (hex_value < 0x21 || hex_value > 0x7e) hex_value = '.';
+
+  return (char)hex_value;
+}
+
+// takes the data and prints it out in hexadecimal and ASCII form
+void print_formatted_data(unsigned char *data, int length) {
+  int i, j, k;
+  char the_text[LINE_LENGTH + 1];
+
+  // print each line 1 at a time
+  for (i = 0; i < length; i += LINE_LENGTH) {
+    printf("%08x  ", i);
+    // add 1 word at a time, but don't go beyond the end of the data
+    for (j = 0; j < LINE_LENGTH && (i + j) < length; j += 2) {
+      the_text[j] = valid_ascii(data[i + j]);
+      the_text[j + 1] = valid_ascii(data[i + j + 1]);
+      printf("%02x %02x ", data[i + j], data[i + j + 1]);
+    }
+
+    // add in FFFF (invalid operation) to fill out the line
+    if ((i + j) >= length) {
+      for (k = j; k < LINE_LENGTH; k += 2) {
+        the_text[k] = valid_ascii(0xff);
+        the_text[k + 1] = valid_ascii(0xff);
+        printf("ff ff ");
+      }
+    }
+
+    the_text[LINE_LENGTH] = '\0';
+    printf(" |%s|\n", the_text);
+  }
+}
+
+void print_memory() {
+  print_formatted_data(reinterpret_cast<unsigned char *>(data), sizeof data);
+}
 
 // converts the passed string into binary form and inserts it into our data
 // area assumes an even number of words!!!
