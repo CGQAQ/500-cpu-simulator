@@ -1,12 +1,11 @@
-#include <stdio.h>
-
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
-
-#include "stdint.h"
 
 using namespace std;
 
@@ -17,6 +16,7 @@ using namespace std;
 #define DATA_SIZE 1024
 #define CODE_SIZE 1024
 #define REGISTERS 16
+#define INFINITE_LOOP_TRIGGER_THRESHOLD (9216)
 
 ///////////////////////////////////////////////
 // constants and structures
@@ -78,7 +78,7 @@ Phase fetch_instr();
 
 Phase decode_instr();
 
-Phase calculate_ea();
+Phase detecting_infinite_loop();
 
 Phase fetch_operands();
 
@@ -96,6 +96,8 @@ static uint16_t *g_current_operand_right;
 static bool g_current_operand_right_need_fetch;
 static int16_t g_current_operand_right_fetched;
 
+static map<uint16_t, int32_t> g_infinite_loop_detect_map;
+
 // memory for our code and data, using our word size for a second dimension to
 // make accessing bytes easier
 static uint8_t code[CODE_SIZE][WORD_SIZE];
@@ -104,10 +106,11 @@ static uint8_t data[DATA_SIZE][WORD_SIZE];
 // A list of handlers to process each state. Provides for a nice simple
 // state machine loop and is easily extended without using a huge
 // switch statement.
-static process_phase control_unit[NUM_PHASES] = {fetch_instr,   decode_instr,
-                                                 calculate_ea,  fetch_operands,
-                                                 execute_instr, write_back};
+static process_phase control_unit[NUM_PHASES] = {
+    fetch_instr,    decode_instr,  detecting_infinite_loop,
+    fetch_operands, execute_instr, write_back};
 
+static int64_t g_instruction_counter = 0;
 void print_inst(uint8_t inst, uint8_t left, uint8_t right) {
   stringstream instruction;
   int operand_left = static_cast<int>(left);
@@ -183,21 +186,37 @@ void print_inst(uint8_t inst, uint8_t left, uint8_t right) {
       }
   }
   string a = instruction.str();
-  cout << a << "\n";
+  cout << "#" << g_instruction_counter << "\tPC: " << register_pc
+       << "\tINST: " << a << "\n";
+  g_instruction_counter++;
 }
 
 /////////////////////////////////////////////////
 // state processing routines
+/**
+ * fetching instruction from code section (code array)
+ * @return Phase enum
+ */
 Phase fetch_instr() {
   g_current_inst_raw = code[register_pc];
   return DECODE_INSTR;
 }
 
+/**
+ * sign extending for arbitrary digits of integer
+ * @param x number to be extended
+ * @param bits digits
+ * @return extended number
+ */
 int16_t sign_extend(uint16_t x, int bits) {
   uint16_t m = 1u << (bits - 1);
   return (x ^ m) - m;
 }
 
+/**
+ * decode instruction so that later phase can use
+ * @return Phase enum
+ */
 Phase decode_instr() {
   // big endian
   auto &l = g_current_inst_raw[0];
@@ -246,7 +265,7 @@ Phase decode_instr() {
     case BRANCH_OPCODE: {
       g_current_operand_right = nullptr;
       g_current_operand_right_need_fetch = false;
-      g_current_operand_right_fetched = sign_extend(r&0b111111, 6);
+      g_current_operand_right_fetched = sign_extend(r & 0b111111, 6);
       break;
     }
     default:
@@ -258,8 +277,28 @@ Phase decode_instr() {
   return CALCULATE_EA;
 }
 
-Phase calculate_ea() { return FETCH_OPERANDS; }
+/**
+ * detecting infinite loop
+ * @return Phase enum
+ */
+Phase detecting_infinite_loop() {
+  // detecting infinite loop
+  if (g_infinite_loop_detect_map.find(register_pc) ==
+      g_infinite_loop_detect_map.end()) {
+    g_infinite_loop_detect_map[register_pc] = 0;
+  }
+  g_infinite_loop_detect_map[register_pc] += 1;
+  if (g_infinite_loop_detect_map[register_pc] >
+      INFINITE_LOOP_TRIGGER_THRESHOLD) {
+    return INFINITE_LOOP;
+  }
+  return FETCH_OPERANDS;
+}
 
+/**
+ * fetch from memory (data array)
+ * @return Phase enum
+ */
 Phase fetch_operands() {
   if (g_current_operand_right_need_fetch) {
     auto d = data[*g_current_operand_right];
@@ -268,6 +307,10 @@ Phase fetch_operands() {
   return EXECUTE_INSTR;
 }
 
+/**
+ * executing decoded instruction
+ * @return Phase enum
+ */
 Phase execute_instr() {
   auto opcode_category = g_current_inst >> 3 & 0b111;
   auto opcode_type = g_current_inst & 0b111;
@@ -365,11 +408,18 @@ Phase execute_instr() {
   return WRITE_BACK;
 }
 
+/**
+ * not used here
+ * @return Phase enum
+ */
 Phase write_back() { return FETCH_INSTR; }
 
 /////////////////////////////////////////////////
 // general routines
 
+/**
+ * initialise the code and the data array before loading data from file.
+ */
 void initialize_system() {
   for (int i = 0; i <= REGISTERS; i++) {
     registers_general[i] = 0;
@@ -515,7 +565,7 @@ int main(int argc, const char *argv[]) {
         printf(
             "Illegal address %04x detected with instruction %02x%02x at "
             "address %04x\n\n",
-            /*better put some data here!*/ g_current_inst_raw[0],
+            /*better put some data here!*/ register_pc, g_current_inst_raw[0],
             g_current_inst_raw[1], register_pc);
         break;
 
