@@ -1,13 +1,13 @@
 CXX = clang++
+CXXFLAGS = -o
 
-ALL:
-	sims
+ALL: sims assembler
 
 sims: start.cpp
-	$(CXX) $< -o $@
+	$(CXX) $< $(CXXFLAGS) $@
 
 assembler: assembler.cpp
-	$(CXX) $< -o $@
+	$(CXX) $< $(CXXFLAGS) $@
 
 
 .PHONY: clean
