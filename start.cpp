@@ -16,7 +16,7 @@ using namespace std;
 #define DATA_SIZE 1024
 #define CODE_SIZE 1024
 #define REGISTERS 16
-#define INFINITE_LOOP_TRIGGER_THRESHOLD (9216)
+#define INFINITE_LOOP_TRIGGER_THRESHOLD (1024000)
 
 ///////////////////////////////////////////////
 // constants and structures
@@ -265,7 +265,7 @@ Phase decode_instr() {
     case BRANCH_OPCODE: {
       g_current_operand_right = nullptr;
       g_current_operand_right_need_fetch = false;
-      g_current_operand_right_fetched = sign_extend(r & 0b111111, 6);
+      // g_current_operand_right_fetched = sign_extend(r & 0b111111, 6);
       break;
     }
     default:
@@ -273,7 +273,9 @@ Phase decode_instr() {
       g_current_operand_right_need_fetch = false;
       g_current_operand_right_fetched = r & 0b111111;
   }
-  print_inst(g_current_inst, (l << 2 & 0b1100) | (r >> 6 & 0b11), r & 0b111111);
+  // debug only, print the instruction that will be execute
+  // print_inst(g_current_inst, (l << 2 & 0b1100) | (r >> 6 & 0b11), r &
+  // 0b111111);
   return CALCULATE_EA;
 }
 
@@ -301,9 +303,14 @@ Phase detecting_infinite_loop() {
  */
 Phase fetch_operands() {
   if (g_current_operand_right_need_fetch) {
+    if (*g_current_operand_right >= DATA_SIZE || *g_current_operand_right < 0) {
+      return ILLEGAL_ADDRESS;
+    }
     auto d = data[*g_current_operand_right];
     g_current_operand_right_fetched = (d[0] << 8 & 0b111111110000000) | d[1];
   }
+  g_current_operand_right_fetched =
+      sign_extend(g_current_operand_right_fetched, 6);
   return EXECUTE_INSTR;
 }
 
